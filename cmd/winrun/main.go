@@ -159,8 +159,13 @@ func main() {
 		Interactive:  interactive,
 	}
 
-	// In interactive mode, set stdin.
-	if interactive {
+	// Always make stdin available to the command.
+	// In interactive mode this goes through direct copy;
+	// in buffered mode it's piped via a goroutine.
+	if !interactive && !bridge.IsTerminal(int(os.Stdin.Fd())) {
+		// Stdin is a pipe (e.g., echo "data" | winrun ...) — forward it.
+		config.Stdin = os.Stdin
+	} else if interactive {
 		config.Stdin = os.Stdin
 	}
 
@@ -168,17 +173,23 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sigCh := make(chan os.Signal, 1)
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		sig := <-sigCh
-		fmt.Fprintf(os.Stderr, "\n[winrun] Received signal %s, shutting down...\n", sig)
-		cancel()
-		// Give processes a moment to terminate, then force exit.
-		time.Sleep(2 * time.Second)
-		fmt.Fprintln(os.Stderr, "[winrun] Force exit.")
-		os.Exit(130)
+		fmt.Fprintf(os.Stderr, "\n[winrun] Received %s, requesting graceful shutdown...\n", sig)
+		cancel() // Cancel context → sends SIGTERM to child via exec.CommandContext.
+
+		// Wait for a second signal or timeout for force kill.
+		select {
+		case sig2 := <-sigCh:
+			fmt.Fprintf(os.Stderr, "[winrun] Received %s again, force exiting.\n", sig2)
+			os.Exit(130)
+		case <-time.After(5 * time.Second):
+			fmt.Fprintln(os.Stderr, "[winrun] Grace period expired, force exiting.")
+			os.Exit(130)
+		}
 	}()
 
 	// Create an executor that uses our signal-aware context.
