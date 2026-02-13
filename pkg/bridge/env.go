@@ -35,10 +35,49 @@ var pathLikeKeys = map[string]bool{
 	"LOCALAPPDATA": true,
 }
 
-// BuildWSLENV generates a WSLENV string from a map of environment variables.
-// Keys that look like paths get the /p flag; all others get /u.
+// inferWSLEnvFlag intelligently selects the WSLENV flag based on both the
+// key name and the actual value content.
 //
-// Example output: "GOPATH/p:MY_VAR/u:PATH/p"
+// Heuristics (in order of priority):
+//  1. Value contains ":" with path-like segments → /l (path list)
+//  2. Value starts with "/" or "./" or "../" → /p (single path)
+//  3. Key name is in the well-known pathLikeKeys set → /p
+//  4. Default → /u (pass unmodified)
+func inferWSLEnvFlag(key, value string) string {
+	// Check value for path list pattern: segments separated by ":" that look like paths.
+	if strings.Contains(value, ":") {
+		segments := strings.Split(value, ":")
+		pathCount := 0
+		for _, seg := range segments {
+			seg = strings.TrimSpace(seg)
+			if strings.HasPrefix(seg, "/") || strings.HasPrefix(seg, "./") {
+				pathCount++
+			}
+		}
+		// If most segments look like paths, treat as path list.
+		if pathCount > 0 && pathCount >= len(segments)/2 {
+			return WSLEnvFlagTranslatePathList
+		}
+	}
+
+	// Check value for single path pattern.
+	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, "./") || strings.HasPrefix(value, "../") {
+		return WSLEnvFlagTranslatePath
+	}
+
+	// Check well-known key names.
+	if pathLikeKeys[strings.ToUpper(key)] {
+		return WSLEnvFlagTranslatePath
+	}
+
+	return WSLEnvFlagUnixToWin
+}
+
+// BuildWSLENV generates a WSLENV string from a map of environment variables.
+// Uses intelligent heuristics to auto-select /p, /l, or /u flags based on
+// both key names and actual values.
+//
+// Example output: "GOPATH/p:MY_LIST/l:MY_VAR/u"
 func BuildWSLENV(vars map[string]string) string {
 	if len(vars) == 0 {
 		return ""
@@ -53,10 +92,7 @@ func BuildWSLENV(vars map[string]string) string {
 
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
-		flag := WSLEnvFlagUnixToWin
-		if pathLikeKeys[strings.ToUpper(k)] {
-			flag = WSLEnvFlagTranslatePath
-		}
+		flag := inferWSLEnvFlag(k, vars[k])
 		parts = append(parts, fmt.Sprintf("%s%s", k, flag))
 	}
 

@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sibikrish3000/gowinbridge/internal/wsl"
+	"golang.org/x/term"
 )
 
 // wslChecked guards the one-time WSL environment validation.
@@ -73,9 +76,15 @@ func looksLikePath(s string) bool {
 		strings.HasPrefix(s, "../")
 }
 
+// IsTerminal reports whether the given file descriptor is a terminal.
+// Exported for use in CLI auto-detection.
+func IsTerminal(fd int) bool {
+	return term.IsTerminal(fd)
+}
+
 // Execute runs a Windows binary from WSL with full lifecycle management.
-// It uses exec.CommandContext for signal propagation and streams stdout/stderr
-// in real-time via goroutines.
+// It uses exec.CommandContext for signal propagation and supports both
+// buffered (Scanner) and interactive (raw copy) stdio modes.
 func Execute(ctx context.Context, config CommandConfig) (Output, error) {
 	// Validate WSL environment (fail fast).
 	if err := validateWSL(); err != nil {
@@ -114,7 +123,52 @@ func Execute(ctx context.Context, config CommandConfig) (Output, error) {
 	// Prepare environment.
 	cmd.Env = PrepareEnv(config)
 
-	// Set up real-time stdout/stderr streaming.
+	// Interactive mode: direct stdio copy, no buffering.
+	if config.Interactive {
+		return executeInteractive(cmd, config)
+	}
+
+	// Buffered mode: capture output with optional encoding.
+	return executeBuffered(cmd, config)
+}
+
+// executeInteractive runs the command with direct stdin/stdout/stderr piping.
+// This supports REPLs, TUI apps, and progress bars.
+func executeInteractive(cmd *exec.Cmd, config CommandConfig) (Output, error) {
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if config.Stdin != nil {
+		cmd.Stdin = config.Stdin
+	} else {
+		cmd.Stdin = os.Stdin
+	}
+
+	start := time.Now()
+
+	if err := cmd.Start(); err != nil {
+		return Output{}, fmt.Errorf("failed to start command %q: %w", config.Command, err)
+	}
+
+	waitErr := cmd.Wait()
+	duration := time.Since(start)
+
+	output := Output{Duration: duration}
+
+	if waitErr != nil {
+		if exitErr, ok := waitErr.(*exec.ExitError); ok {
+			output.ExitCode = exitErr.ExitCode()
+		} else {
+			return output, fmt.Errorf("command execution failed: %w", waitErr)
+		}
+	}
+
+	return output, nil
+}
+
+// executeBuffered runs the command with buffered stdio capture and optional encoding.
+func executeBuffered(cmd *exec.Cmd, config CommandConfig) (Output, error) {
+	// Set up pipes.
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return Output{}, fmt.Errorf("failed to create stdout pipe: %w", err)
@@ -124,10 +178,38 @@ func Execute(ctx context.Context, config CommandConfig) (Output, error) {
 		return Output{}, fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
+	// If stdin is provided in non-interactive mode, pipe it.
+	if config.Stdin != nil {
+		stdinPipe, err := cmd.StdinPipe()
+		if err != nil {
+			return Output{}, fmt.Errorf("failed to create stdin pipe: %w", err)
+		}
+		go func() {
+			defer stdinPipe.Close()
+			io.Copy(stdinPipe, config.Stdin)
+		}()
+	}
+
+	// Wrap pipes in encoding decoder if specified.
+	var stdoutReader, stderrReader io.Reader
+	stdoutReader = stdoutPipe
+	stderrReader = stderrPipe
+
+	if config.Encoding != "" {
+		stdoutReader, err = NewDecodingReader(stdoutPipe, config.Encoding)
+		if err != nil {
+			return Output{}, fmt.Errorf("failed to create stdout decoder: %w", err)
+		}
+		stderrReader, err = NewDecodingReader(stderrPipe, config.Encoding)
+		if err != nil {
+			return Output{}, fmt.Errorf("failed to create stderr decoder: %w", err)
+		}
+	}
+
 	start := time.Now()
 
 	if err := cmd.Start(); err != nil {
-		return Output{}, fmt.Errorf("failed to start command %q: %w", resolvedCmd, err)
+		return Output{}, fmt.Errorf("failed to start command %q: %w", config.Command, err)
 	}
 
 	// Stream stdout and stderr concurrently.
@@ -137,7 +219,7 @@ func Execute(ctx context.Context, config CommandConfig) (Output, error) {
 
 	go func() {
 		defer wg.Done()
-		scanner := bufio.NewScanner(stdoutPipe)
+		scanner := bufio.NewScanner(stdoutReader)
 		for scanner.Scan() {
 			line := scanner.Text()
 			stdoutBuf.WriteString(line)
@@ -147,7 +229,7 @@ func Execute(ctx context.Context, config CommandConfig) (Output, error) {
 
 	go func() {
 		defer wg.Done()
-		scanner := bufio.NewScanner(stderrPipe)
+		scanner := bufio.NewScanner(stderrReader)
 		for scanner.Scan() {
 			line := scanner.Text()
 			stderrBuf.WriteString(line)
