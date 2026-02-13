@@ -1,7 +1,7 @@
 # GoWinBridge
 
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go&logoColor=white)](https://go.dev)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: GPL](https://img.shields.io/badge/License-GPL-yellow.svg)](LICENSE)
 
 A production-grade Go library and CLI for executing Windows binaries from WSL with **path translation**, **environment bridging**, **real-time stdio streaming**, and **bounded concurrency**.
 
