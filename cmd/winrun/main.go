@@ -32,6 +32,13 @@ import (
 	"github.com/sibikrish3000/gowinbridge/pkg/workerpool"
 )
 
+// Build-time variables, injected via -ldflags.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 // envFlags collects repeatable --env KEY=VAL flags.
 type envFlags []string
 
@@ -48,6 +55,7 @@ func main() {
 		envVars      envFlags
 		tunnelEnv    bool
 		timeout      time.Duration
+		showVersion  bool
 	)
 
 	flag.IntVar(&concurrency, "concurrency", runtime.NumCPU(), "Max concurrent executions")
@@ -55,6 +63,7 @@ func main() {
 	flag.Var(&envVars, "env", "Set environment variable as KEY=VAL (repeatable)")
 	flag.BoolVar(&tunnelEnv, "tunnel-env", false, "Enable WSLENV tunneling for specified env vars")
 	flag.DurationVar(&timeout, "timeout", 0, "Max execution time (e.g., 30s, 5m)")
+	flag.BoolVar(&showVersion, "version", false, "Print version information and exit")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: winrun [flags] -- <command> [args...]\n\n")
@@ -69,6 +78,11 @@ func main() {
 	}
 
 	flag.Parse()
+
+	if showVersion {
+		fmt.Printf("winrun %s\n  commit: %s\n  built:  %s\n  go:     %s\n", version, commit, date, runtime.Version())
+		os.Exit(0)
+	}
 
 	// Find the command after "--" separator.
 	args := flag.Args()
