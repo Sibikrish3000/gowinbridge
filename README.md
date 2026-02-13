@@ -38,6 +38,14 @@ cmd/winrun/                CLI entry point (flags, signal handling, shim subcomm
 
 ## Installation
 
+### One-line Installer (Recommended)
+
+```bash
+curl -sL https://raw.githubusercontent.com/sibikrish3000/gowinbridge/main/install.sh | sh
+```
+
+### From Source
+
 ```bash
 # Clone
 git clone https://github.com/sibikrish3000/gowinbridge.git
@@ -46,7 +54,7 @@ cd gowinbridge
 # Build the CLI
 go build -o winrun ./cmd/winrun
 
-# Or install directly
+# Or install via Go
 go install github.com/sibikrish3000/gowinbridge/cmd/winrun@latest
 ```
 
